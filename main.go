@@ -24,15 +24,18 @@ type Message struct {
 
 // RunResults describes results of a single client / run
 type RunResults struct {
-	ID          int     `json:"id"`
-	Successes   int64   `json:"successes"`
-	Failures    int64   `json:"failures"`
-	RunTime     float64 `json:"run_time"`
-	MsgTimeMin  float64 `json:"msg_time_min"`
-	MsgTimeMax  float64 `json:"msg_time_max"`
-	MsgTimeMean float64 `json:"msg_time_mean"`
-	MsgTimeStd  float64 `json:"msg_time_std"`
-	MsgsPerSec  float64 `json:"msgs_per_sec"`
+	ID              int     `json:"id"`
+	Successes       int64   `json:"successes"`
+	Failures        int64   `json:"failures"`
+	RunTime         float64 `json:"run_time"`
+	MsgTimeMin      float64 `json:"msg_time_min"`
+	MsgTimeMax      float64 `json:"msg_time_max"`
+	MsgTimeMean     float64 `json:"msg_time_mean"`
+	MsgTimeStd      float64 `json:"msg_time_std"`
+	MsgsPerSec      float64 `json:"msgs_per_sec"`
+	MsgsReceived    int64   `json:msgs_received`
+	LostConnectin   bool    `lost_connection`
+	SubscribeFailed bool    `subscribe_failed`
 }
 
 // TotalResults describes results of all clients / runs
@@ -48,6 +51,9 @@ type TotalResults struct {
 	MsgTimeMeanStd  float64 `json:"msg_time_mean_std"`
 	TotalMsgsPerSec float64 `json:"total_msgs_per_sec"`
 	AvgMsgsPerSec   float64 `json:"avg_msgs_per_sec"`
+	ReceiveMessages int64   `json:"receive_messages"`
+	LostConnections int     `lost_connections`
+	SubscribeFailed int     `subscribe_failed`
 }
 
 // JSONResults are used to export results as a JSON document
@@ -58,25 +64,26 @@ type JSONResults struct {
 
 func main() {
 	var (
-		broker              = flag.String("broker", "tcp://localhost:1883", "MQTT broker endpoint as scheme://host:port")
-		topic               = flag.String("topic", "/test", "MQTT topic for outgoing messages")
-		payload             = flag.String("payload", "", "MQTT message payload. If empty, then payload is generated based on the size parameter")
-		username            = flag.String("username", "", "MQTT client username (empty if auth disabled)")
-		password            = flag.String("password", "", "MQTT client password (empty if auth disabled)")
-		qos                 = flag.Int("qos", 1, "QoS for published messages")
-		wait                = flag.Int("wait", 60000, "QoS 1 wait timeout in milliseconds")
-		size                = flag.Int("size", 100, "Size of the messages payload (bytes)")
-		count               = flag.Int("count", 100, "Number of messages to send per client")
-		clients             = flag.Int("clients", 10, "Number of clients to start")
-		format              = flag.String("format", "text", "Output format: text|json")
-		quiet               = flag.Bool("quiet", false, "Suppress logs while running")
-		clientPrefix        = flag.String("client-prefix", "mqtt-benchmark", "MQTT client id prefix (suffixed with '-<client-num>'")
-		clientCert          = flag.String("client-cert", "", "Path to client certificate in PEM format")
-		clientKey           = flag.String("client-key", "", "Path to private clientKey in PEM format")
-		rampUpTimeInSec     = flag.Int("ramp-up-time", 0, "Time in seconds to generate clients by default will not wait between load request")
+		broker               = flag.String("broker", "tcp://localhost:1883", "MQTT broker endpoint as scheme://host:port")
+		topic                = flag.String("topic", "/test", "MQTT topic for outgoing messages")
+		payload              = flag.String("payload", "", "MQTT message payload. If empty, then payload is generated based on the size parameter")
+		username             = flag.String("username", "", "MQTT client username (empty if auth disabled)")
+		password             = flag.String("password", "", "MQTT client password (empty if auth disabled)")
+		qos                  = flag.Int("qos", 1, "QoS for published messages")
+		wait                 = flag.Int("wait", 60000, "QoS 1 wait timeout in milliseconds")
+		size                 = flag.Int("size", 100, "Size of the messages payload (bytes)")
+		count                = flag.Int("count", 100, "Number of messages to send per client")
+		clients              = flag.Int("clients", 10, "Number of clients to start")
+		format               = flag.String("format", "text", "Output format: text|json")
+		quiet                = flag.Bool("quiet", false, "Suppress logs while running")
+		clientPrefix         = flag.String("client-prefix", "mqtt-benchmark", "MQTT client id prefix (suffixed with '-<client-num>'")
+		clientCert           = flag.String("client-cert", "", "Path to client certificate in PEM format")
+		clientKey            = flag.String("client-key", "", "Path to private clientKey in PEM format")
+		rampUpTimeInSec      = flag.Int("ramp-up-time", 0, "Time in seconds to generate clients by default will not wait between load request")
 		messageIntervalInSec = flag.Int("message-interval", 1, "Time interval in seconds to publish message")
+		mod                  = flag.String("mod", "sub", "pub or sub")
+		subTopic             = flag.String("subTopic", "subTest", "the topic to sub")
 	)
-
 	flag.Parse()
 	if *clients < 1 {
 		log.Fatalf("Invalid arguments: number of clients should be > 1, given: %v", *clients)
@@ -100,32 +107,42 @@ func main() {
 	}
 
 	resCh := make(chan *RunResults)
+	clientStarted := make(chan bool, *clients)
 	start := time.Now()
 	sleepTime := float64(*rampUpTimeInSec) / float64(*clients)
+
 	for i := 0; i < *clients; i++ {
 		if !*quiet {
 			log.Println("Starting client ", i)
 		}
 		c := &Client{
-			ID:          i,
-			ClientID:    *clientPrefix,
-			BrokerURL:   *broker,
-			BrokerUser:  *username,
-			BrokerPass:  *password,
-			MsgTopic:    *topic,
-			MsgPayload:  *payload,
-			MsgSize:     *size,
-			MsgCount:    *count,
-			MsgQoS:      byte(*qos),
-			Quiet:       *quiet,
-			WaitTimeout: time.Duration(*wait) * time.Millisecond,
-			TLSConfig:   tlsConfig,
+			ID:              i,
+			ClientID:        *clientPrefix,
+			BrokerURL:       *broker,
+			BrokerUser:      *username,
+			BrokerPass:      *password,
+			MsgTopic:        *topic,
+			MsgPayload:      *payload,
+			MsgSize:         *size,
+			MsgCount:        *count,
+			MsgQoS:          byte(*qos),
+			Quiet:           *quiet,
+			WaitTimeout:     time.Duration(*wait) * time.Millisecond,
+			TLSConfig:       tlsConfig,
 			MessageInterval: *messageIntervalInSec,
+			Mod:             *mod,
+			SubTopic:        *subTopic,
 		}
-		go c.Run(resCh)
-        time.Sleep(time.Duration(sleepTime * 1000) * time.Millisecond)
+		go c.Run(resCh, clientStarted)
+		time.Sleep(time.Duration(sleepTime*1000) * time.Millisecond)
 	}
-
+	go func() {
+		results := make([]bool, *clients)
+		for i := 0; i < *clients; i++ {
+			results[i] = <-clientStarted
+		}
+		log.Printf("all client stared !")
+	}()
 	// collect the results
 	results := make([]*RunResults, *clients)
 	for i := 0; i < *clients; i++ {
@@ -152,6 +169,7 @@ func calculateTotalResults(results []*RunResults, totalTime time.Duration, sampl
 		totals.Successes += res.Successes
 		totals.Failures += res.Failures
 		totals.TotalMsgsPerSec += res.MsgsPerSec
+		totals.ReceiveMessages += res.MsgsReceived
 
 		if res.MsgTimeMin < totals.MsgTimeMin {
 			totals.MsgTimeMin = res.MsgTimeMin
@@ -159,6 +177,13 @@ func calculateTotalResults(results []*RunResults, totalTime time.Duration, sampl
 
 		if res.MsgTimeMax > totals.MsgTimeMax {
 			totals.MsgTimeMax = res.MsgTimeMax
+		}
+
+		if res.LostConnectin {
+			totals.LostConnections++
+		}
+		if res.SubscribeFailed {
+			totals.SubscribeFailed++
 		}
 
 		msgTimeMeans[i] = res.MsgTimeMean
@@ -194,16 +219,16 @@ func printResults(results []*RunResults, totals *TotalResults, format string) {
 
 		fmt.Println(out.String())
 	default:
-		for _, res := range results {
-			fmt.Printf("======= CLIENT %d =======\n", res.ID)
-			fmt.Printf("Ratio:               %.3f (%d/%d)\n", float64(res.Successes)/float64(res.Successes+res.Failures), res.Successes, res.Successes+res.Failures)
-			fmt.Printf("Runtime (s):         %.3f\n", res.RunTime)
-			fmt.Printf("Msg time min (ms):   %.3f\n", res.MsgTimeMin)
-			fmt.Printf("Msg time max (ms):   %.3f\n", res.MsgTimeMax)
-			fmt.Printf("Msg time mean (ms):  %.3f\n", res.MsgTimeMean)
-			fmt.Printf("Msg time std (ms):   %.3f\n", res.MsgTimeStd)
-			fmt.Printf("Bandwidth (msg/sec): %.3f\n\n", res.MsgsPerSec)
-		}
+		// for _, res := range results {
+		// 	fmt.Printf("======= CLIENT %d =======\n", res.ID)
+		// 	fmt.Printf("Ratio:               %.3f (%d/%d)\n", float64(res.Successes)/float64(res.Successes+res.Failures), res.Successes, res.Successes+res.Failures)
+		// 	fmt.Printf("Runtime (s):         %.3f\n", res.RunTime)
+		// 	fmt.Printf("Msg time min (ms):   %.3f\n", res.MsgTimeMin)
+		// 	fmt.Printf("Msg time max (ms):   %.3f\n", res.MsgTimeMax)
+		// 	fmt.Printf("Msg time mean (ms):  %.3f\n", res.MsgTimeMean)
+		// 	fmt.Printf("Msg time std (ms):   %.3f\n", res.MsgTimeStd)
+		// 	fmt.Printf("Bandwidth (msg/sec): %.3f\n\n", res.MsgsPerSec)
+		// }
 		fmt.Printf("========= TOTAL (%d) =========\n", len(results))
 		fmt.Printf("Total Ratio:                 %.3f (%d/%d)\n", totals.Ratio, totals.Successes, totals.Successes+totals.Failures)
 		fmt.Printf("Total Runtime (sec):         %.3f\n", totals.TotalRunTime)
@@ -214,6 +239,9 @@ func printResults(results []*RunResults, totals *TotalResults, format string) {
 		fmt.Printf("Msg time mean std (ms):      %.3f\n", totals.MsgTimeMeanStd)
 		fmt.Printf("Average Bandwidth (msg/sec): %.3f\n", totals.AvgMsgsPerSec)
 		fmt.Printf("Total Bandwidth (msg/sec):   %.3f\n", totals.TotalMsgsPerSec)
+		fmt.Printf("Total message receive:       %d \n", totals.ReceiveMessages)
+		fmt.Printf("Total lost connections:       %d \n", totals.LostConnections)
+		fmt.Printf("Total subscribe faileds:       %d \n", totals.SubscribeFailed)
 	}
 }
 

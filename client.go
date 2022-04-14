@@ -13,35 +13,43 @@ import (
 
 // Client implements an MQTT client running benchmark test
 type Client struct {
-	ID          int
-	ClientID    string
-	BrokerURL   string
-	BrokerUser  string
-	BrokerPass  string
-	MsgTopic    string
-	MsgPayload  string
-	MsgSize     int
-	MsgCount    int
-	MsgQoS      byte
-	Quiet       bool
-	WaitTimeout time.Duration
-	TLSConfig   *tls.Config
+	ID              int
+	ClientID        string
+	BrokerURL       string
+	BrokerUser      string
+	BrokerPass      string
+	MsgTopic        string
+	MsgPayload      string
+	MsgSize         int
+	MsgCount        int
+	MsgQoS          byte
+	Quiet           bool
+	WaitTimeout     time.Duration
+	TLSConfig       *tls.Config
 	MessageInterval int
+	Mod             string
+	SubTopic        string
 }
 
 // Run runs benchmark tests and writes results in the provided channel
-func (c *Client) Run(res chan *RunResults) {
+func (c *Client) Run(res chan *RunResults, clientStarted chan bool) {
 	newMsgs := make(chan *Message)
 	pubMsgs := make(chan *Message)
+	receivedMsgs := make(chan *Message)
 	doneGen := make(chan bool)
 	donePub := make(chan bool)
+	doneSub := make(chan bool)
+	loseConection := make(chan bool)
+	subscribeFailed := make(chan bool)
 	runResults := new(RunResults)
-
 	started := time.Now()
-	// start generator
-	go c.genMessages(newMsgs, doneGen)
-	// start publisher
-	go c.pubMessages(newMsgs, pubMsgs, doneGen, donePub)
+	// start generator,
+	if c.Mod == "pub" {
+		go c.genMessages(newMsgs, doneGen)
+	}
+
+	// start mqtt client
+	go c.start(newMsgs, pubMsgs, receivedMsgs, doneGen, donePub, doneSub, loseConection, subscribeFailed, clientStarted)
 
 	runResults.ID = c.ID
 	times := []float64{}
@@ -56,6 +64,11 @@ func (c *Client) Run(res chan *RunResults) {
 				runResults.Successes++
 				times = append(times, m.Delivered.Sub(m.Sent).Seconds()*1000) // in milliseconds
 			}
+		case rm := <-receivedMsgs:
+			if rm.Error {
+				log.Printf("CLIENT %v ERROR receive message: %v: at %v\n", c.ID, rm.Topic, rm.Sent.Unix())
+			}
+			runResults.MsgsReceived++
 		case <-donePub:
 			// calculate results
 			duration := time.Since(started)
@@ -72,6 +85,20 @@ func (c *Client) Run(res chan *RunResults) {
 			// report results and exit
 			res <- runResults
 			return
+
+		case <-doneSub:
+			res <- runResults
+
+		case <-loseConection:
+			runResults.LostConnectin = true
+			res <- runResults
+			return
+
+		case <-subscribeFailed:
+			runResults.SubscribeFailed = true
+			res <- runResults
+			return
+
 		}
 	}
 }
@@ -98,46 +125,70 @@ func (c *Client) genMessages(ch chan *Message, done chan bool) {
 	// log.Printf("CLIENT %v is done generating messages\n", c.ID)
 }
 
-func (c *Client) pubMessages(in, out chan *Message, doneGen, donePub chan bool) {
+func (c *Client) start(in, out, receivedMsgs chan *Message, doneGen, donePub, doneSub, loseConection, subscribeFailed, clientStarted chan bool) {
+	//client连接上后的回调
 	onConnected := func(client mqtt.Client) {
 		if !c.Quiet {
 			log.Printf("CLIENT %v is connected to the broker %v\n", c.ID, c.BrokerURL)
+			loseConection <- true
 		}
 		ctr := 0
-		for {
-			select {
-			case m := <-in:
-				m.Sent = time.Now()
-				token := client.Publish(m.Topic, m.QoS, false, m.Payload)
-				res := token.WaitTimeout(c.WaitTimeout)
-				if !res {
-					log.Printf("CLIENT %v Timeout sending message: %v\n", c.ID, token.Error())
-					m.Error = true
-				} else if token.Error() != nil {
-					log.Printf("CLIENT %v Error sending message: %v\n", c.ID, token.Error())
-					m.Error = true
-				} else {
-					m.Delivered = time.Now()
-					m.Error = false
-				}
-				out <- m
-
-				if ctr > 0 && ctr%100 == 0 {
-					if !c.Quiet {
-						log.Printf("CLIENT %v published %v messages and keeps publishing...\n", c.ID, ctr)
+		if c.Mod == "pub" {
+			clientStarted <- true
+			for {
+				select {
+				case m := <-in:
+					m.Sent = time.Now()
+					token := client.Publish(m.Topic, m.QoS, false, m.Payload)
+					res := token.WaitTimeout(c.WaitTimeout)
+					if !res {
+						log.Printf("CLIENT %v Timeout sending message: %v\n", c.ID, token.Error())
+						m.Error = true
+					} else if token.Error() != nil {
+						log.Printf("CLIENT %v Error sending message: %v\n", c.ID, token.Error())
+						m.Error = true
+					} else {
+						m.Delivered = time.Now()
+						m.Error = false
 					}
+					out <- m
+
+					if ctr > 0 && ctr%100 == 0 {
+						if !c.Quiet {
+							log.Printf("CLIENT %v published %v messages and keeps publishing...\n", c.ID, ctr)
+						}
+					}
+					ctr++
+				case <-doneGen:
+					donePub <- true
+					if !c.Quiet {
+						log.Printf("CLIENT %v is done publishing\n", c.ID)
+					}
+					return
 				}
-				ctr++
-			case <-doneGen:
-				donePub <- true
-				if !c.Quiet {
-					log.Printf("CLIENT %v is done publishing\n", c.ID)
-				}
-				return
 			}
+		} else {
+			t := client.Subscribe(c.SubTopic, 0, func(client mqtt.Client, msg mqtt.Message) {
+				if string(msg.Payload()) == "finish" {
+					// log.Printf("CLIENT %v had done sub \n", c.ID)
+					donePub <- true
+				}
+				// if !c.Quiet {
+				// 	log.Printf("CLIENT %v is receive message %v\n", c.ID, string(msg.Payload()))
+				// }
+				receivedMsgs <- &Message{
+					Error: false,
+				}
+			})
+			t.Wait()
+			if t.Error() != nil {
+				log.Printf("CLIENT %v had error sub to the broker: %v\n", c.ID, t.Error())
+				subscribeFailed <- true
+			}
+			clientStarted <- true
 		}
 	}
-
+	log.Printf("CLIENT id is  %v", fmt.Sprintf("%s-%v", c.ClientID, c.ID))
 	opts := mqtt.NewClientOptions().
 		AddBroker(c.BrokerURL).
 		SetClientID(fmt.Sprintf("%s-%v", c.ClientID, c.ID)).
@@ -146,6 +197,7 @@ func (c *Client) pubMessages(in, out chan *Message, doneGen, donePub chan bool) 
 		SetOnConnectHandler(onConnected).
 		SetConnectionLostHandler(func(client mqtt.Client, reason error) {
 			log.Printf("CLIENT %v lost connection to the broker: %v. Will reconnect...\n", c.ID, reason.Error())
+			loseConection <- true
 		})
 	if c.BrokerUser != "" && c.BrokerPass != "" {
 		opts.SetUsername(c.BrokerUser)
@@ -158,8 +210,8 @@ func (c *Client) pubMessages(in, out chan *Message, doneGen, donePub chan bool) 
 	client := mqtt.NewClient(opts)
 	token := client.Connect()
 	token.Wait()
-
 	if token.Error() != nil {
 		log.Printf("CLIENT %v had error connecting to the broker: %v\n", c.ID, token.Error())
+		loseConection <- true
 	}
 }
