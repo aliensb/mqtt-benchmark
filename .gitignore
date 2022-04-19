@@ -2,3 +2,7 @@
 .idea
 .vscode
 mqtt-benchmark
+dist
+*.sh
+*.txt
+dist.tar.gz
