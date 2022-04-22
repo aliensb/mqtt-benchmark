@@ -219,16 +219,16 @@ func printResults(results []*RunResults, totals *TotalResults, format string) {
 
 		fmt.Println(out.String())
 	default:
-		// for _, res := range results {
-		// 	fmt.Printf("======= CLIENT %d =======\n", res.ID)
-		// 	fmt.Printf("Ratio:               %.3f (%d/%d)\n", float64(res.Successes)/float64(res.Successes+res.Failures), res.Successes, res.Successes+res.Failures)
-		// 	fmt.Printf("Runtime (s):         %.3f\n", res.RunTime)
-		// 	fmt.Printf("Msg time min (ms):   %.3f\n", res.MsgTimeMin)
-		// 	fmt.Printf("Msg time max (ms):   %.3f\n", res.MsgTimeMax)
-		// 	fmt.Printf("Msg time mean (ms):  %.3f\n", res.MsgTimeMean)
-		// 	fmt.Printf("Msg time std (ms):   %.3f\n", res.MsgTimeStd)
-		// 	fmt.Printf("Bandwidth (msg/sec): %.3f\n\n", res.MsgsPerSec)
-		// }
+		for _, res := range results {
+			fmt.Printf("======= CLIENT %d =======\n", res.ID)
+			fmt.Printf("Ratio:               %.3f (%d/%d)\n", float64(res.Successes)/float64(res.Successes+res.Failures), res.Successes, res.Successes+res.Failures)
+			fmt.Printf("Runtime (s):         %.3f\n", res.RunTime)
+			fmt.Printf("Msg time min (ms):   %.3f\n", res.MsgTimeMin)
+			fmt.Printf("Msg time max (ms):   %.3f\n", res.MsgTimeMax)
+			fmt.Printf("Msg time mean (ms):  %.3f\n", res.MsgTimeMean)
+			fmt.Printf("Msg time std (ms):   %.3f\n", res.MsgTimeStd)
+			fmt.Printf("Bandwidth (msg/sec): %.3f\n\n", res.MsgsPerSec)
+		}
 		fmt.Printf("========= TOTAL (%d) =========\n", len(results))
 		fmt.Printf("Total Ratio:                 %.3f (%d/%d)\n", totals.Ratio, totals.Successes, totals.Successes+totals.Failures)
 		fmt.Printf("Total Runtime (sec):         %.3f\n", totals.TotalRunTime)

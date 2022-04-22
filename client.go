@@ -193,8 +193,9 @@ func (c *Client) start(in, out, receivedMsgs chan *Message, doneGen, donePub, do
 		AddBroker(c.BrokerURL).
 		SetClientID(fmt.Sprintf("%s-%v", c.ClientID, c.ID)).
 		SetCleanSession(true).
-		SetAutoReconnect(true).
+		SetAutoReconnect(false).
 		SetOnConnectHandler(onConnected).
+		SetPingTimeout(25 * time.Second).
 		SetConnectionLostHandler(func(client mqtt.Client, reason error) {
 			log.Printf("CLIENT %v lost connection to the broker: %v. Will reconnect...\n", c.ID, reason.Error())
 			loseConection <- true
